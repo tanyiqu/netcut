@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>剪贴板工具</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<style>
+#upload-area { border:2px dashed #6c757d; border-radius:8px; padding:40px; text-align:center; cursor:pointer; transition: background-color 0.3s, border-color 0.3s; margin-bottom:15px; }
+#upload-area.dragover { background-color:#e9ecef; border-color:#0d6efd; }
+#upload-area p { margin:0; font-size:1.1rem; color:#6c757d; }
+#upload-area input[type="file"]{display:none;}
+textarea { resize:none; overflow:auto; max-height:80vh; }
+#toast-container { position: fixed; top:20px; right:20px; z-index:1055; }
+</style>
+</head>
+<body class="bg-light">
+<div class="container py-4">
+<h1 class="mb-4 text-center">📋 剪贴板工具</h1>
+<div id="toast-container"></div>
+
+<ul class="nav nav-tabs mb-3">
+    <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#text">文本</button></li>
+    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#upload">上传文件</button></li>
+</ul>
+
+<div class="tab-content">
+    <div class="tab-pane fade show active" id="text">
+        <div class="card mb-4 shadow-sm">
+            <div class="card-body">
+                <form id="text-form">
+                    <textarea name="content" class="form-control">{{ latest_text }}</textarea>
+                    <button type="submit" class="btn btn-success mt-2">保存 (Ctrl+S)</button>
+                </form>
+                <p id="last-save-time" class="mt-2 text-muted">最后保存时间：{{ latest_time }}</p>
+            </div>
+        </div>
+    </div>
+
+    <div class="tab-pane fade" id="upload">
+        <div class="card mb-4 shadow-sm">
+            <div class="card-body">
+                <div id="upload-area"><p>点击或拖拽文件到此区域选择文件</p><input type="file" id="file-input" multiple></div>
+                <div id="file-list" class="mb-2"></div>
+                <button class="btn btn-primary" id="upload-all-btn">开始上传</button>
+            </div>
+        </div>
+
+        <div class="card shadow-sm">
+            <div class="card-header bg-info text-white">文件记录</div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-striped table-hover align-middle">
+                        <thead class="table-light">
+                            <tr><th>文件名</th><th>大小</th><th>上传时间</th><th>操作</th></tr>
+                        </thead>
+                        <tbody id="file-table-body">
+                        {% for id, filename, size, timestamp in files %}
+                            <tr id="file-row-{{ id }}">
+                                <td><a href="{{ url_for('uploaded_file', filename=filename) }}" target="_blank">{{ filename }}</a></td>
+                                <td>{{ (size/1024/1024)|round(2) }} MB</td>
+                                <td>{{ timestamp }}</td>
+                                <td>
+                                    <button class="btn btn-sm btn-danger" onclick="deleteFile({{ id }})">删除</button>
+                                </td>
+                            </tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+</div>
+
+<script>
+let selectedFiles = [];
+const textarea = document.querySelector('textarea[name="content"]');
+
+function showToast(msg){
+    const toastEl = document.createElement('div');
+    toastEl.className='toast align-items-center text-bg-success border-0';
+    toastEl.setAttribute('role','alert');
+    toastEl.setAttribute('aria-live','assertive');
+    toastEl.setAttribute('aria-atomic','true');
+    toastEl.innerHTML=`<div class="d-flex"><div class="toast-body">${msg}</div><button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button></div>`;
+    document.getElementById('toast-container').appendChild(toastEl);
+    const toast = new bootstrap.Toast(toastEl,{delay:3000});
+    toast.show(); toastEl.addEventListener('hidden.bs.toast',()=>toastEl.remove());
+}
+
+// 文本自适应
+function adjustHeight(el){el.style.height='auto'; el.style.height=Math.min(el.scrollHeight, window.innerHeight*0.8)+'px';}
+adjustHeight(textarea); textarea.addEventListener('input',()=>adjustHeight(textarea));
+
+// Ctrl+S 保存文本
+document.addEventListener('keydown',e=>{
+    if(e.ctrlKey && e.key==='s'){e.preventDefault(); saveText();}
+});
+
+document.getElementById('text-form').addEventListener('submit', e=>{e.preventDefault(); saveText();});
+function saveText(){
+    fetch('/save_text',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({content: textarea.value})
+    })
+    .then(r => r.json())
+    .then(d => {
+        if(d.success){
+            showToast('文本保存成功');
+            document.getElementById('last-save-time').innerText = `最后保存时间：${d.timestamp}`;
+        } else showToast('保存失败');
+    }).catch(()=>showToast('保存失败'));
+}
+
+// 文件上传
+const uploadArea=document.getElementById('upload-area');
+const fileInput=document.getElementById('file-input');
+const fileListContainer=document.getElementById('file-list');
+
+uploadArea.addEventListener('click',()=>fileInput.click());
+uploadArea.addEventListener('dragover',e=>{e.preventDefault(); uploadArea.classList.add('dragover');});
+uploadArea.addEventListener('dragleave',e=>{e.preventDefault(); uploadArea.classList.remove('dragover');});
+uploadArea.addEventListener('drop',e=>{e.preventDefault(); uploadArea.classList.remove('dragover'); handleFiles(e.dataTransfer.files);});
+fileInput.addEventListener('change',()=>handleFiles(fileInput.files));
+
+function formatSize(bytes){return (bytes/1024/1024).toFixed(2)+' MB';}
+function handleFiles(files){for(let f of files) selectedFiles.push(f); renderFileList();}
+function renderFileList(){
+    fileListContainer.innerHTML='';
+    selectedFiles.forEach((file,index)=>{
+        const row=document.createElement('div');
+        row.className='mb-2 p-2 border rounded bg-light';
+        row.innerHTML=`<div class="d-flex justify-content-between align-items-center"><div><strong>${file.name}</strong> (${formatSize(file.size)})</div><button class="btn btn-sm btn-danger">删除</button></div><div class="progress mt-1" style="height:20px;"><div class="progress-bar progress-bar-striped progress-bar-animated" style="width:0%" id="progress-${index}">0%</div></div><div class="mt-1" id="status-${index}">等待上传</div>`;
+        row.querySelector('button').addEventListener('click',()=>{selectedFiles.splice(index,1); renderFileList();});
+        fileListContainer.appendChild(row);
+    });
+}
+
+// 上传按钮 AJAX
+document.getElementById('upload-all-btn').addEventListener('click',()=>{
+    if(!selectedFiles.length){showToast('请选择文件'); return;}
+    uploadFilesSequentially(0);
+});
+
+function uploadFilesSequentially(i){
+    if(i>=selectedFiles.length){showToast('全部文件上传完成'); return;}
+    const file=selectedFiles[i];
+    const xhr=new XMLHttpRequest();
+    const formData=new FormData(); formData.append('file',file);
+    const progressBar=document.getElementById(`progress-${i}`);
+    const statusText=document.getElementById(`status-${i}`);
+    xhr.open('POST','/upload',true);
+    const startTime=Date.now();
+    xhr.upload.onprogress=e=>{
+        if(e.lengthComputable){
+            const percent=Math.round((e.loaded/e.total)*100);
+            progressBar.style.width=percent+'%'; progressBar.innerText=percent+'%';
+            const elapsed=(Date.now()-startTime)/1000;
+            const speed=e.loaded/elapsed;
+            const eta=(e.total-e.loaded)/speed;
+            statusText.innerText=`已上传 ${(e.loaded/1024/1024).toFixed(2)}/${(e.total/1024/1024).toFixed(2)} MB，速度 ${(speed/1024/1024).toFixed(2)} MB/s，剩余 ${eta.toFixed(1)}秒`;
+        }
+    };
+    xhr.onload=function(){
+        if(xhr.status===200){
+            progressBar.style.width='100%'; progressBar.innerText='完成'; statusText.innerText='上传完成';
+            const res = JSON.parse(xhr.responseText);
+            showToast(`文件 "${file.name}" 上传成功`);
+            if(res.success && res.file) addFileToTable(res.file);
+            uploadFilesSequentially(i+1);
+        } else statusText.innerText='上传失败';
+    };
+    xhr.onerror=()=>{statusText.innerText='上传失败';};
+    xhr.send(formData);
+}
+
+function addFileToTable(file){
+    const tbody = document.getElementById('file-table-body');
+    if(!tbody) return;
+    const tr = document.createElement('tr');
+    tr.id = `file-row-${file.id}`;
+    tr.innerHTML = `
+        <td><a href="/uploads/${file.filename}" target="_blank">${file.filename}</a></td>
+        <td>${(file.size/1024/1024).toFixed(2)} MB</td>
+        <td>${file.timestamp}</td>
+        <td><button class="btn btn-sm btn-danger" onclick="deleteFile(${file.id})">删除</button></td>
+    `;
+    tbody.prepend(tr);
+}
+
+// AJAX 删除文件
+function deleteFile(fileId){
+    if(!confirm("确定要删除这个文件吗？")) return;
+    fetch(`/delete/${fileId}`, {method:'POST'})
+    .then(r => r.json())
+    .then(d=>{
+        if(d.success){
+            showToast('文件删除成功');
+            const row = document.getElementById(`file-row-${fileId}`);
+            if(row) row.remove();
+        } else showToast('删除失败');
+    }).catch(()=>showToast('删除失败'));
+}
+</script>
+</body>
+</html>
